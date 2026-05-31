@@ -19,394 +19,162 @@
 +              '~~~~~~~~~~~~~~~~~~~'
 ```
 
-> **Self-memory and replacement models for Hermes agents.**
+> **Self-memory for Hermes agents — with LLM-powered extraction, multi-source context injection, and memory safety fixes.**
 >
-> *Remember your work. Train your replacement.*
->
-> **⚠️ This is a fork** of [esaradev/icarus-plugin](https://github.com/esaradev/icarus-plugin) with significant enhancements. See [Changes from upstream](#changes-from-upstream).
+> *Remember your work. Don't corrupt it.*
 
-## What this is
+> ⚠️ **Fork of [esaradev/icarus-plugin](https://github.com/esaradev/icarus-plugin).** See [Enhancements](#enhancements-over-upstream) for what we changed and why.
 
-Icarus is a **Hermes plugin**. It runs inside Hermes and gives agents shared memory, training data extraction, and a model replacement pipeline.
+---
 
-Icarus is **not** an Obsidian plugin. Obsidian is an optional viewer/editor for the markdown files Icarus writes. You don't need Obsidian to use Icarus.
+## Compatibility
 
-## What this is not
+| Requirement | Version |
+|-------------|---------|
+| **Hermes Agent** | 0.15.2 (tested; 0.6.0+ should work) |
+| **Python** | 3.11+ |
+| **OpenRouter** | Required for LLM extraction (any chat model) |
 
-- Not an orchestration framework
-- Not an agent router
-- Not a dashboard
-- Not an Obsidian community plugin
-- Not a standalone app
+---
 
-## Architecture
+## What it does
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  Hermes Agent                                            │
-│  ├── Icarus plugin (this repo)                           │
-│  │   ├── hooks: auto-capture decisions, inject context   │
-│  │   ├── tools: recall, write, search, train, switch     │
-│  │   └── scoring: session quality, export weighting      │
-│  │                                                       │
-│  │         writes/reads                                  │
-│  │            │                                          │
-│  ▼            ▼                                          │
-│  ~/my-vault/icarus/          (FABRIC_DIR)                │
-│  ├── agent-decision-chose-fastify-abc1.md                │
-│  ├── agent-review-rate-limiter-race-d4e2.md              │
-│  ├── daily/2026-04-01.md     (Obsidian daily notes)      │
-│  └── cold/                   (archived entries)          │
-│                                                          │
-│  ~/my-vault/                 (OBSIDIAN_VAULT_PATH)       │
-│  └── .obsidian/app.json     (vault config)               │
-│                                                          │
-│  export-training.py ──► together.jsonl ──► Together AI   │
-│                              │                           │
-│                              ▼                           │
-│                     fine-tuned replacement model          │
-└──────────────────────────────────────────────────────────┘
-```
+Icarus is a **Hermes plugin** that gives agents persistent, cross-session memory. It runs as 16 tools + 4 lifecycle hooks inside Hermes — no external services, no dashboard.
 
-## 2-minute quickstart
+**Core features:**
 
-### 1. Install the plugin
+- **Automatic session capture** — every session end produces structured fabric entries (decisions, resolutions, notes) written to `FABRIC_DIR` as markdown
+- **Context injection** — relevant memories, Qdrant knowledge, past sessions, and facts are injected into the agent's context at the start of each session
+- **Quality scoring** — sessions are scored on substance and completeness; entries carry `training_value` (high/normal/low)
+- **Training pipeline** — fabric entries can be exported as fine-tuning pairs and used to train replacement models via Together AI
+
+For the full upstream feature list (cross-agent handoffs, model replacement, eval tools), see the [original README](https://github.com/esaradev/icarus-plugin).
+
+Icarus writes plain markdown files. Obsidian can read them, but Icarus itself is **not** an Obsidian plugin — it's a Hermes plugin.
+
+---
+
+## Quick install
 
 ```bash
-git clone https://github.com/esaradev/icarus-plugin.git
+git clone https://github.com/ClaudioDrews/icarus-plugin.git
 mkdir -p ~/.hermes/plugins/icarus
 cp -r icarus-plugin/* ~/.hermes/plugins/icarus/
 ```
 
-### 2. Set environment variables
-
-Add to your Hermes profile `.env` (e.g. `~/.hermes/.env`):
+Then add to your Hermes profile `.env` (`~/.hermes/.env`):
 
 ```bash
-# required: where Icarus writes notes
-FABRIC_DIR=~/Documents/my-vault/icarus
+# Required
+FABRIC_DIR=~/Vault/fabric
+OPENROUTER_API_KEY=sk-or-...
 
-# optional: enable Obsidian wikilinks and daily notes
-ICARUS_OBSIDIAN=1
-
-# optional: vault root (if icarus notes are a subfolder)
-OBSIDIAN_VAULT_PATH=~/Documents/my-vault
-
-# optional: for training/eval tools
-TOGETHER_API_KEY=tok-...
+# Strongly recommended (see Enhancements below)
+ICARUS_EXTRACTION_MAX_TOKENS=4096
+ICARUS_EXTRACTION_MODEL=deepseek/deepseek-v4-flash
 ```
 
-### 3. Start Hermes and verify
-
-```bash
-hermes chat
-```
-
-Type `/plugins` to verify:
+Verify with `/plugins` inside Hermes:
 
 ```
-Plugins (1):
-  ✓ icarus v0.3.0 (16 tools, 4 hooks)
+✓ icarus v0.3.0 (16 tools, 4 hooks)
 ```
 
-### 4. Initialize Obsidian (optional)
+---
 
-Inside your Hermes chat, say:
+## How we use it
 
-> Set up Obsidian for my notes
+In our setup, Icarus runs inside **Hermes 0.15.2** on Linux (Mint). `FABRIC_DIR` points to `~/Vault/fabric/` — a subfolder of an Obsidian vault — so all entries are browseable in Obsidian with wikilinks and daily notes.
 
-The agent will call `fabric_init_obsidian`, which creates `.obsidian/app.json` at your vault root and `daily/` inside your notes directory.
+We rely on Icarus primarily for:
 
-### 5. Write a test note and verify
+1. **Session documentation** — every agent session automatically produces a structured fabric entry with context, decisions, and outcomes
+2. **Cross-session awareness** — `fabric_recall` and context injection give the agent memory of past work without manual prompting
+3. **Quality metadata** — `training_value` tagging and session scoring let us track which sessions produced valuable work vs. noise
 
-Inside Hermes:
+The training/model-replacement pipeline is available but not currently used in our workflow.
 
-> Write a fabric note about testing the setup
+---
 
-Then open your vault in Obsidian. You should see:
-- A new `.md` file in your notes directory with a readable title
-- A daily note at `daily/2026-04-01.md` with a wikilink to it
-- YAML frontmatter visible in the note
+## Enhancements over upstream
 
-## What Icarus adds to Hermes
+This fork adds ~550 lines to `hooks.py` and fixes a critical bug in `state.py`. Every change was driven by real breakage in production.
 
-Hermes already has per-instance memory and a capable runtime. Icarus adds:
+### Memory file isolation (critical bug fix)
 
-- **Cross-instance shared memory** -- agents on different profiles read each other's work through a shared `FABRIC_DIR`
-- **Decision-quality tagging** -- entries carry `training_value` (high/normal/low) so noise doesn't pollute training data
-- **Training data extraction** -- fabric entries become fine-tuning pairs with quality filtering and pair weighting
-- **Model replacement pipeline** -- fine-tune a cheaper model from your agent's own history, eval it, switch to it
+**What broke:** Icarus wrote its creative state (learnings, questions, cycle counter) to `MEMORY.md` using `.write_text()` — overwriting the entire file on every session end. The Hermes `memory` tool uses a `§`-delimited format for that file. Icarus's markdown format destroyed it, causing **silent data loss** and recurring "Icarus write conflict" errors that blocked the memory tool from working for days before we noticed.
 
-## Tools
+**Fix:** `write_memory_file()` now writes to **`CREATIVE.md`** instead of `MEMORY.md`. Two writers, two files, zero conflicts.
 
-### Memory
+### LLM-powered session extraction
 
-| Tool | What it does |
-|------|-------------|
-| `fabric_recall` | Ranked retrieval from shared memory |
-| `fabric_write` | Write entries with linking, evidence, and handoff fields |
-| `fabric_search` | Keyword grep across all entries |
-| `fabric_pending` | Show work assigned to this agent |
-| `fabric_curate` | Set training value (high/normal/low) on an entry |
+**What was inadequate:** Upstream extracts session summaries by truncating raw message text — `text[:500]` for the result, `text[:80]` for the summary. No semantic summarization, no structure. Entries were often cut mid-word. 50% of fabric entries in our vault were truncated and useless before this fix.
 
-### Training
+**Fix:** `on_session_end()` now uses an **LLM** (`_llm_extract_entries`) via OpenRouter to read the full session transcript and produce structured JSON entries with proper context, decision, and outcome fields. No truncation — the LLM writes the summary, not a character limit. The legacy path remains as fallback when the LLM fails.
 
-| Tool | What it does |
-|------|-------------|
-| `fabric_export` | Export training pairs. Modes: high-precision, normal, high-volume |
-| `fabric_train` | Start fine-tune, auto-selects best quality mode with enough pairs |
-| `fabric_train_status` | Check job progress, updates model registry |
+> ⚠️ **This is why `ICARUS_EXTRACTION_MAX_TOKENS=4096` matters.** The default of 1024 tokens is too small for sessions with 3+ entries. Set it to 4096 in your `.env`.
 
-### Replacement models
+### Multi-source context injection
 
-| Tool | What it does |
-|------|-------------|
-| `fabric_models` | List all trained models with eval scores |
-| `fabric_eval` | Compare candidate vs base model on fabric-derived prompts |
-| `fabric_switch_model` | Activate a replacement model if eval passes threshold |
-| `fabric_rollback_model` | Emergency rollback to previous model |
+Upstream injects only fabric entries into the agent's context. This fork adds three more:
 
-### Operational
+| Source | How | What it finds |
+|--------|-----|---------------|
+| **Qdrant** | Semantic search via `context_enhancer` pipeline | Technical docs, wiki concepts, past decisions |
+| **Sessions** | FTS5 over `state.db` | Past conversations on similar topics |
+| **Facts** | FTS5 over `memory_store.db` | Structured facts with entity resolution |
 
-| Tool | What it does |
-|------|-------------|
-| `fabric_brief` | Daily brief: pending work, recent activity, suggested action |
-| `fabric_telemetry` | Recall/usage stats: what gets recalled, what gets used |
-| `fabric_report` | Corpus health: entries by type, training value, trainable estimate |
-| `fabric_init_obsidian` | One-time Obsidian vault setup (Hermes tool, not a shell command) |
+Each source has **per-session deduplication** — the same result won't be injected twice.
 
-## Hooks
+### Quality of life
 
-4 automatic hooks fire without the agent calling anything:
+| Feature | What it prevents |
+|---------|-----------------|
+| **Backtick sanitization** | `_sanitize_learning()` strips unpaired backticks that corrupt markdown rendering |
+| **System injection filter** | Detects orchestrator preambles (`[IMPORTANT:`, `[SYSTEM:`) so they aren't captured as "user tasks" |
+| **Social closer detection** | Skips "ok", "thanks", "👍" — prevents trivial messages from triggering context searches |
+| **Configurable limits** | `ICARUS_RESULT_MAX_CHARS` and `ICARUS_TASK_MAX_CHARS` env vars control fallback truncation |
 
-- **on_session_start** -- loads SOUL, pending handoffs, recent context
-- **pre_llm_call** -- injects relevant memories when the topic changes
-- **post_llm_call** -- captures high-value decisions (decision + outcome + substantial user request)
-- **on_session_end** -- scores session quality, writes structured note if threshold met
+---
 
-## Obsidian setup
+## Environment variables
 
-Icarus is a **Hermes plugin**, not an Obsidian plugin. Obsidian just reads the markdown files.
+All variables go in your Hermes profile `.env` (e.g. `~/.hermes/.env`).
 
-**How it works:**
-- `FABRIC_DIR` is where Icarus writes `.md` files (your notes directory)
-- `OBSIDIAN_VAULT_PATH` is where `.obsidian/` lives (your vault root)
-- `ICARUS_OBSIDIAN=1` enables wikilinks in note bodies and daily note linking
-- `fabric_init_obsidian` is a Hermes tool -- call it from inside Hermes, not from the terminal
+| Variable | Default | Recommended | Notes |
+|----------|---------|-------------|-------|
+| `FABRIC_DIR` | `~/fabric/` | `~/Vault/fabric/` | Where Icarus writes markdown entries |
+| `OPENROUTER_API_KEY` | — | `sk-or-...` | Required for LLM extraction. Also checks `OPENROUTER_FULL_API_KEY` and `OPENROUTER_DS_API_KEY` |
+| `ICARUS_EXTRACTION_MAX_TOKENS` | `1024` | **`4096`** | ⚠️ Increase from default — 1024 is too small for real sessions |
+| `ICARUS_EXTRACTION_MODEL` | `deepseek/deepseek-v4-flash` | same | Any OpenRouter chat model |
+| `ICARUS_RESULT_MAX_CHARS` | `500` | `500` | Fallback truncation (only when LLM extraction fails) |
+| `ICARUS_TASK_MAX_CHARS` | `300` | `300` | Fallback truncation for task capture |
+| `ICARUS_OBSIDIAN` | — | `1` | Enable Obsidian wikilinks and daily notes |
+| `OBSIDIAN_VAULT_PATH` | — | `~/Vault` | Vault root (only needed if `FABRIC_DIR` is a subfolder) |
+| `TOGETHER_API_KEY` | — | — | Only needed for training/eval tools |
 
-**Two setups:**
-
-Dedicated vault (Icarus IS the vault):
-```
-FABRIC_DIR=~/icarus-vault
-# OBSIDIAN_VAULT_PATH not needed
-```
-
-Subfolder in existing vault:
-```
-FABRIC_DIR=~/my-vault/icarus-notes
-OBSIDIAN_VAULT_PATH=~/my-vault
-```
-
-## Builder -> reviewer -> fix
-
-```
-# builder finishes work, hands off
-fabric_write(type="code-session", summary="rate limiter ready",
-             status="open", assigned_to="daedalus")
-
-# reviewer sees it at session start, writes linked review
-fabric_write(type="review", summary="found race condition",
-             review_of="icarus:a3f29b01")
-
-# builder sees the review, writes linked fix
-fabric_write(type="code-session", summary="fixed race condition",
-             revises="icarus:a3f29b01")
-```
-
-## Memory -> training -> replacement model
-
-```
-1. Work normally. The plugin captures decisions and completions automatically.
-
-2. Check readiness:
-   fabric_export(mode="high-precision")
-
-3. Fine-tune:
-   fabric_train(suffix="my-agent-v2")
-
-4. Check progress:
-   fabric_train_status()
-
-5. Evaluate:
-   fabric_eval(candidate_model="user/my-agent-v2-abc123")
-
-6. Switch:
-   fabric_switch_model(model_id="user/my-agent-v2-abc123")
-```
-
-## Training value
-
-Entries carry a `training_value` field: `high`, `normal`, or `low`.
-
-- **high** -- decisions with outcomes, completed reviews, successful fixes
-- **normal** -- default for most entries
-- **low** -- generic session summaries, conversational exchanges
-
-Export modes:
-- `high-precision` -- only grounded entries: high-value, verified, linked reviews, structured sessions, or completed entries with evidence
-- `normal` -- excludes low-value and skips noisy unstructured session notes unless grounded
-- `high-volume` -- everything
-
-## Profiles (Hermes v0.6.0)
-
-```bash
-hermes profile create coder
-hermes profile create reviewer --clone
-mkdir -p ~/.hermes-coder/plugins/icarus ~/.hermes-reviewer/plugins/icarus
-cp -r icarus-plugin/* ~/.hermes-coder/plugins/icarus/
-cp -r icarus-plugin/* ~/.hermes-reviewer/plugins/icarus/
-hermes -p coder chat
-```
-
-Both profiles write to the same `FABRIC_DIR`, so the reviewer sees the coder's work.
-
-## Fallback models
-
-After switching to a replacement model, set the original as fallback in `config.yaml`:
-
-```yaml
-model: user/my-agent-v2-abc123
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
-```
-
-## Troubleshooting
-
-**"tool not found" when calling fabric_write or fabric_recall**
-- Run `/plugins` in Hermes. If Icarus isn't listed, the plugin isn't installed in the right directory.
-- Check: `ls ~/.hermes/plugins/icarus/__init__.py` (global) or `ls ~/.hermes-YOUR_PROFILE/plugins/icarus/__init__.py` (profile-specific Hermes home).
-- The plugin needs `__init__.py`, `plugin.yaml`, and all `.py` files in the same directory.
-- If you copied the repo twice, make sure you do **not** have a nested path like `~/.hermes/plugins/icarus/icarus-plugin/__init__.py`.
-
-**Notes not showing in Obsidian**
-- Check `FABRIC_DIR` points to a directory inside your Obsidian vault.
-- Open the vault root (not the notes subdirectory) in Obsidian.
-- If you set `OBSIDIAN_VAULT_PATH`, make sure `FABRIC_DIR` is inside it.
-
-**"I pointed FABRIC_DIR at the wrong directory"**
-- Change `FABRIC_DIR` in your `.env` and restart Hermes. Existing notes stay where they were. Move them manually if needed.
-
-**".obsidian ended up in the wrong place"**
-- Delete the misplaced `.obsidian/` directory.
-- Set `OBSIDIAN_VAULT_PATH` to your actual vault root.
-- Call `fabric_init_obsidian` again inside Hermes.
-
-**"I expected an Obsidian plugin"**
-- Icarus is a Hermes plugin, not an Obsidian community plugin. There is nothing to install in Obsidian. Obsidian reads the markdown files directly -- no plugin needed.
-
-**Wikilinks not appearing in notes**
-- Set `ICARUS_OBSIDIAN=1` in your `.env` and restart Hermes. Links are only added when this flag is set.
-
-## Validation
-
-After setup, verify everything works:
-
-```
-1. In Hermes: "write a test note about validating the setup"
-2. Check: ls $FABRIC_DIR/*.md (should show a new file)
-3. Check: ls $FABRIC_DIR/daily/ (should show today's date)
-4. Open vault in Obsidian: note should appear with frontmatter
-5. In Hermes: fabric_brief() (should show the note in recent work)
-```
-
-## Smoke test
-
-```bash
-bash scripts/smoke-handoff.sh
-bash scripts/test-plugin.sh
-```
-
-## Requirements
-
-- [Hermes](https://github.com/NousResearch/hermes-agent) v0.6.0+
-- Python 3.10+
-- `TOGETHER_API_KEY` in `.env` (for training/eval tools)
-- `FABRIC_DIR` set in `.env` (defaults to `~/fabric/`)
+---
 
 ## Files
 
 ```
 __init__.py           registration (16 tools, 4 hooks)
 plugin.yaml           manifest
-schemas.py            tool schemas (what the LLM sees)
+schemas.py            tool schemas
 tools.py              tool handlers
-hooks.py              lifecycle hooks
-state.py              fabric I/O, session scoring, model registry
+hooks.py              lifecycle hooks (heavily modified — see Enhancements)
+state.py              fabric I/O, session scoring (MEMORY.md fix)
 obsidian.py           opt-in Obsidian formatting
 fabric-retrieve.py    ranked retrieval with scoring
-export-training.py    training pair extraction with quality filtering
+export-training.py    training pair extraction
 scripts/
   eval-replacement.py model comparison eval
   smoke-handoff.sh    end-to-end handoff proof
   test-plugin.sh      66-test fixture suite
 ```
 
-## Changes from upstream
-
-This fork adds **~550 lines** of enhancements to `hooks.py` and a critical fix to `state.py`.
-
-### Critical fix: Memory file isolation
-
-**Problem:** Icarus wrote its creative state (learnings, questions, cycle counter) to `MEMORY.md`, overwriting the file with `.write_text()` on every session end. The `memory` tool uses a `§`-delimited format — Icarus's markdown format corrupted it, causing silent data loss and recurring "Icarus write conflict" errors.
-
-**Fix:** `write_memory_file()` now writes to **`CREATIVE.md`** instead of `MEMORY.md`. Two writers, two files, zero conflicts.
-
-### Fabric entry quality: LLM-powered extraction
-
-**Problem:** The upstream extracts session summaries by truncating raw message text at 500 characters with `text[:500]` — no semantic summarization, no structure. Entries were often cut mid-word or mid-sentence.
-
-**Fix:** `on_session_end()` now uses **LLM-powered extraction** (`_llm_extract_entries`) via OpenRouter. The LLM reads the full session transcript and produces structured JSON entries with proper context, decision, and outcome fields — no truncation.
-
-The legacy truncation path remains as a **fallback** (when the LLM fails or returns nothing), but with configurable limits.
-
-### Context injection: Qdrant + sessions + facts
-
-Upstream injects only fabric entries into the agent's context. This fork adds three additional sources:
-
-- **Qdrant knowledge base** — semantic search over `knowledge_base` collection via the `context_enhancer` pipeline
-- **Session history** — FTS5 search over `state.db` for past conversations
-- **Fact store** — FTS5 search over `memory_store.db` for structured facts
-
-Each source has **per-session deduplication** — the same result won't be injected twice in one session.
-
-### Quality of life improvements
-
-| Feature | Detail |
-|---------|--------|
-| **Backtick sanitization** | `_sanitize_learning()` removes unpaired backticks that produce orphaned markdown in learning lines |
-| **System injection filtering** | `_is_system_injection()` detects orchestrator preambles (`[IMPORTANT:`, `[SYSTEM:`) and excludes them from task capture |
-| **Social closer detection** | `_is_social_close()` skips trivial messages ("ok", "thanks", "👍") so they don't trigger context searches |
-| **Configurable limits** | `ICARUS_RESULT_MAX_CHARS` (default 500), `ICARUS_TASK_MAX_CHARS` (default 300) control fallback truncation |
-
-### Recommended environment variables
-
-Add these to your Hermes profile `.env`:
-
-```bash
-# Required for LLM extraction (choose one)
-OPENROUTER_API_KEY=sk-or-...
-# or OPENROUTER_FULL_API_KEY / OPENROUTER_DS_API_KEY
-
-# LLM extraction — increase from default 1024 for complex sessions
-# Sessions with 3+ entries or detailed transcripts need this
-ICARUS_EXTRACTION_MAX_TOKENS=4096
-
-# Extraction model (any OpenRouter chat model)
-ICARUS_EXTRACTION_MODEL=deepseek/deepseek-v4-flash
-```
+---
 
 ## License
 
-MIT
+MIT — same as upstream.
