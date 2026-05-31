@@ -22,6 +22,8 @@
 > **Self-memory and replacement models for Hermes agents.**
 >
 > *Remember your work. Train your replacement.*
+>
+> **⚠️ This is a fork** of [esaradev/icarus-plugin](https://github.com/esaradev/icarus-plugin) with significant enhancements. See [Changes from upstream](#changes-from-upstream).
 
 ## What this is
 
@@ -349,6 +351,60 @@ scripts/
   eval-replacement.py model comparison eval
   smoke-handoff.sh    end-to-end handoff proof
   test-plugin.sh      66-test fixture suite
+```
+
+## Changes from upstream
+
+This fork adds **~550 lines** of enhancements to `hooks.py` and a critical fix to `state.py`.
+
+### Critical fix: Memory file isolation
+
+**Problem:** Icarus wrote its creative state (learnings, questions, cycle counter) to `MEMORY.md`, overwriting the file with `.write_text()` on every session end. The `memory` tool uses a `§`-delimited format — Icarus's markdown format corrupted it, causing silent data loss and recurring "Icarus write conflict" errors.
+
+**Fix:** `write_memory_file()` now writes to **`CREATIVE.md`** instead of `MEMORY.md`. Two writers, two files, zero conflicts.
+
+### Fabric entry quality: LLM-powered extraction
+
+**Problem:** The upstream extracts session summaries by truncating raw message text at 500 characters with `text[:500]` — no semantic summarization, no structure. Entries were often cut mid-word or mid-sentence.
+
+**Fix:** `on_session_end()` now uses **LLM-powered extraction** (`_llm_extract_entries`) via OpenRouter. The LLM reads the full session transcript and produces structured JSON entries with proper context, decision, and outcome fields — no truncation.
+
+The legacy truncation path remains as a **fallback** (when the LLM fails or returns nothing), but with configurable limits.
+
+### Context injection: Qdrant + sessions + facts
+
+Upstream injects only fabric entries into the agent's context. This fork adds three additional sources:
+
+- **Qdrant knowledge base** — semantic search over `knowledge_base` collection via the `context_enhancer` pipeline
+- **Session history** — FTS5 search over `state.db` for past conversations
+- **Fact store** — FTS5 search over `memory_store.db` for structured facts
+
+Each source has **per-session deduplication** — the same result won't be injected twice in one session.
+
+### Quality of life improvements
+
+| Feature | Detail |
+|---------|--------|
+| **Backtick sanitization** | `_sanitize_learning()` removes unpaired backticks that produce orphaned markdown in learning lines |
+| **System injection filtering** | `_is_system_injection()` detects orchestrator preambles (`[IMPORTANT:`, `[SYSTEM:`) and excludes them from task capture |
+| **Social closer detection** | `_is_social_close()` skips trivial messages ("ok", "thanks", "👍") so they don't trigger context searches |
+| **Configurable limits** | `ICARUS_RESULT_MAX_CHARS` (default 500), `ICARUS_TASK_MAX_CHARS` (default 300) control fallback truncation |
+
+### Recommended environment variables
+
+Add these to your Hermes profile `.env`:
+
+```bash
+# Required for LLM extraction (choose one)
+OPENROUTER_API_KEY=sk-or-...
+# or OPENROUTER_FULL_API_KEY / OPENROUTER_DS_API_KEY
+
+# LLM extraction — increase from default 1024 for complex sessions
+# Sessions with 3+ entries or detailed transcripts need this
+ICARUS_EXTRACTION_MAX_TOKENS=4096
+
+# Extraction model (any OpenRouter chat model)
+ICARUS_EXTRACTION_MODEL=deepseek/deepseek-v4-flash
 ```
 
 ## License
