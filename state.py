@@ -1172,12 +1172,20 @@ def load_soul():
 # ── Memory file ──────────────────────────────────────────
 
 def write_memory_file(s):
+    """Write Icarus creative state to CREATIVE.md — NOT to MEMORY.md.
+
+    MEMORY.md is owned exclusively by the memory tool (§-delimited format).
+    Writing to it from here caused drift that blocked memory persistence
+    (issue #26045).  CREATIVE.md is safe because nothing else writes to it.
+    """
     if not HERMES_HOME:
         return
     mem_dir = HERMES_HOME / "memories"
     mem_dir.mkdir(parents=True, exist_ok=True)
     agent = AGENT_NAME or "agent"
-    lines = [f"# {agent} memory\n"]
+    mem_path = mem_dir / "CREATIVE.md"
+
+    lines = [f"# {agent} creative state\n"]
     if s.get("questions"):
         lines.append("## open questions")
         for q in s["questions"][-5:]:
@@ -1189,4 +1197,5 @@ def write_memory_file(s):
             lines.append(f"- {ln}")
         lines.append("")
     lines.append(f"cycles: {s.get('cycle', 0)}")
-    (mem_dir / "MEMORY.md").write_text("\n".join(lines), "utf-8")
+
+    mem_path.write_text("\n".join(lines), "utf-8")
